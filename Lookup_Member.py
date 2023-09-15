@@ -10,10 +10,6 @@ from XML_to_DF_Member import *
 import json
 warnings.simplefilter('ignore')
 
-total_requests = 0
-success_count = 0
-error_count = 0
-
 gc.collect()
 app = Flask(__name__)
 
@@ -92,14 +88,6 @@ def move_to_beginning(dictionary, key):
 
 @app.route('/Member_Matching', methods=['GET', 'POST'])
 def Member_Matching():
-    global total_requests, success_count, error_count
-    total_requests += 1
-    is_match_Ami = False
-    is_match_MemberDoB = False
-    is_match_FName =  False
-    is_match_LName = False
-    is_match_EmpDob = False
-    FLAG = []
     if request.method == 'POST':
         data = request.get_json(force=True)
         file_name = data['file_name']
@@ -125,76 +113,72 @@ def Member_Matching():
             if prepared_data.shape[0] > 0:
                 prepared_data = prepared_data.apply(lambda x:x.str.lower())
                 prepared_data = prepared_data.drop_duplicates(subset=dup_cols)
+                prepared_data["Record_id"] = prepared_data["QueryNumber"] +"_"+prepared_data["id"]
                 prepared_data = gen_true_match(prepared_data, ocr_cols)
                 prepared_data['sequence1'] = prepared_data.apply(create_seq1, axis=1)
                 prepared_data['sequence2'] = prepared_data.apply(create_seq2, axis=1)
                 prepared_data['sequence1'] = prepared_data['sequence1'].str.replace("missing", " [u] ")
                 prepared_data['sequence2'] = prepared_data['sequence2'].str.replace("missing", " [u] ")
-                # print(prepared_data['sequence1'][0])
-                # print("*"*30)
-                # print(prepared_data['sequence2'][0])
                 test_ds = Dataset.from_pandas(prepared_data)
                 test_ds = apply_tok(test_ds, tokz)
                 preds, _, _ = trainer.predict(test_ds['test'])
                 del test_ds
+                gc.collect()
                 probs_score = softmax(preds, axis=-1)
                 prepared_data['Prob_Score'] = probs_score[:,1]
-                # prepared_data = prepared_data[prepared_data['Prob_Score'] > 0.1]
                 prepared_data['Prob_Score'] = prepared_data['Prob_Score'].apply(lambda x: round(x,4))
-                cols_list  = ocr_cols + db_cols_all + ["QueryNumber", "id", "Prob_Score", "total_true", "sequence1", "sequence2"]
+                cols_list  = ocr_cols + db_cols_all + ["Prob_Score", "total_true", "sequence1", "sequence2", "Record_id"]
                 output_df = prepared_data[cols_list].sort_values(by = ['total_true', 'Prob_Score'], ascending = [False, False], key=None)
-                # print(output_df)
-                output_df["Record_id"] = output_df["QueryNumber"] +"_"+output_df["id"]
                 output_df = output_df.reset_index(drop=True)
-                # output_df = re_org_prob(output_df)
                 mem_logger.info("Output Data Frame Size::  %s", output_df.shape)
                 result = dict(zip(output_df["Record_id"], output_df["Prob_Score"]))
-                STP_dict = {}
-                print(output_df["Ami_"][0])
-                if output_df["Ami_"][0] == output_df["Ami"][0]:
-                    is_match_Ami = True
-                else:
-                    FLAG.append("Ami")
-
-                if output_df["EmpFirstNm_"][0] == output_df["EmpFirstNm"][0]:
-                    is_match_FName = True
-                else:
-                    FLAG.append("EmpFirstNm")
-
-                if output_df["EmpLastNm_"][0] == output_df["EmpLastNm"][0]:
-                    is_match_LName = True
-                else:
-                    FLAG.append("EmpLastNm")
                 
-                if output_df["MemberDob_"][0] == output_df["MemberDob"][0]:
-                    is_match_MemberDoB = True
-                else:
-                    FLAG.append("MemberDob")
+                STP_dict = {}
 
-                if output_df["EmpDob_"][0] == output_df["EmpDob"][0]:
-                    is_match_EmpDob = True
+                is_emp_id_match = False
+                if output_df.iloc[0]["Ami_"] != 'missing':
+                    if output_df.iloc[0]["Ami_"] == output_df.iloc[0]["Ami"]:
+                        is_emp_id_match = True
+                elif output_df.iloc[0]["EmpInd_"] != 'missing':
+                    if output_df.iloc[0]["EmpInd_"] == output_df.iloc[0]["EmpInd"]:
+                        is_emp_id_match = True
                 else:
-                    FLAG.append("EmpDob")
-
-                if output_df["total_true"][0] >=6 and output_df["Prob_Score"][0] >= 0.99 and output_df["Ami_"][0] == output_df["Ami"][0]:
-                    STP_dict["STP"] = output_df.iloc[0]["Record_id"]
+                    is_emp_id_match = False
+                
+               
+                if (is_emp_id_match) and \
+                    (output_df.iloc[0]["MemberDob_"] == output_df.iloc[0]["MemberDob"]) and (output_df.iloc[0]["EmpLastNm_"] == output_df.iloc[0]["EmpLastNm"]) and \
+                    (output_df.iloc[0]["EmpDob_"] == output_df.iloc[0]["EmpDob"]) and  (output_df.iloc[0]['EmpDepLname_'] == output_df.iloc[0]['EmpDepLname']) and \
+                    (output_df.iloc[0]['EmpDepFname_'] == output_df.iloc[0]['EmpDepFname']) and (output_df.iloc[0]['SubLastName_'] == output_df.iloc[0]['SubLastName']) and \
+                    (output_df.iloc[0]['SubFirstName_'] == output_df.iloc[0]['SubFirstName']) and \
+                    (output_df.iloc[0]["EmpFirstNm_"] == output_df.iloc[0]["EmpFirstNm"]) and (output_df.iloc[0]["total_true"] >= 6) and (output_df.iloc[0]["Prob_Score"] >= 0.99) :
+                    STP_dict["STP"] = output_df.iloc[0]["Record_id"]               
+                else:
+                    STP_dict["STP"] = False
+                
+                if (output_df.iloc[0]['Ami_'] == 'missing') and (output_df.iloc[0]['EmpDepLname_'] == 'missing') and (output_df.iloc[0]['EmpDepFname_']== 'missing') and \
+                    (output_df.iloc[0]['MemberDob_'] == 'missing') and (output_df.iloc[0]['EmpLastNm_'] == 'missing') and (output_df.iloc[0]['EmpFirstNm_'] == 'missing') and \
+                    (output_df.iloc[0]['EmpDob_'] == 'missing') and (output_df.iloc[0]['EmpInd_'] == 'missing'):
+                        if (output_df.iloc[0]['SubLastName_'] == output_df.iloc[0]['SubLastName']) and (output_df.iloc[0]['SubFirstName_'] == output_df.iloc[0]['SubFirstName']) and \
+                            (output_df.iloc[0]['SubDob_'] == output_df.iloc[0]['SubDob']) and (output_df.iloc[0]['AmiNum_'] == output_df.iloc[0]['AmiNum']) and \
+                            (output_df.iloc[0]['DepLastName_'] == output_df.iloc[0]['DepLastName']) and (output_df.iloc[0]['DepFirstName_'] == output_df.iloc[0]['DepFirstName']):
+                            
+                            STP_dict["STP"] = output_df.iloc[0]["Record_id"]
+                        else:
+                            STP_dict["STP"] = False
                 else:
                     STP_dict["STP"] = False
 
                 mem_logger.info("STP::   %s", str(STP_dict["STP"]))
-                final_dict = {"STP":STP_dict["STP"], "FLAG": FLAG, "Prob_scores":result}
-                success_count += 1
+                final_dict = {"STP":STP_dict["STP"], "Prob_scores":result}
                 return json.dumps(final_dict)
             else:
                 mem_logger.error("All 16 OCR/DB Fields missing in XML File")
-                error_count += 1
                 return json.dumps({"Error":"All 16 OCR/DB Fields missing in XML File"})
         
         except Exception as exp:
             mem_logger.exception(exp)
-            error_count += 1
             return json.dumps({"Exception":"Exception in Parsing the XML File"})
 
 if __name__ == '__main__':
     app.run(host='localhost',port='5002',debug=True)
-    log_summary(total_requests, success_count, error_count)
